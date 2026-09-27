@@ -41,16 +41,24 @@ jobs:
       - name: Build
         run: pyinstaller --clean --noconfirm packaging/fuckzhs.spec
 
-      # 冒烟测试：产物至少能启动并打印帮助。
-      # 在临时目录里跑，避免 config.json / logs 落到仓库里。
+      # 冒烟测试：产物至少能启动、打印帮助，并在自己旁边创建状态文件。
+      # 注意：冻结版的 getDir() 是「可执行文件所在目录」，所以必须把产物
+      # 复制到临时目录里再运行，否则 config.json 会生成在 dist/ 而不是这里。
       - name: Smoke test
         shell: bash
         run: |
           mkdir -p smoke && cd smoke
-          "../${{ matrix.built }}" --help > help.txt 2>&1
+          cp "../${{ matrix.built }}" .
+          BIN=$(basename "${{ matrix.built }}")
+          "./$BIN" --help > help.txt 2>&1
           cat help.txt
           grep -q "ZHS Fucker" help.txt
-          test -f config.json && echo "OK: 状态文件落在可执行文件旁边"
+          if [ -f config.json ]; then
+            echo "OK: state files created next to the executable"
+          else
+            echo "FAIL: config.json was not created next to the executable"
+            exit 1
+          fi
 
       - name: Rename artifact
         shell: bash

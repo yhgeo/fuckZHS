@@ -35,14 +35,16 @@ ROOT = os.path.abspath(os.path.join(SPECPATH, os.pardir))
 CACHE_DIR = os.path.join(ROOT, 'build_tiktoken_cache')
 
 # ---- 1. 构建期预下载 tiktoken 词表 ----------------------------------------
+# 注意：这里只能用 ASCII 输出。Windows 的 stdout 默认是 cp1252，
+# 打印中文会抛 UnicodeEncodeError 导致构建失败。
 os.makedirs(CACHE_DIR, exist_ok=True)
 _env = dict(os.environ, TIKTOKEN_CACHE_DIR=CACHE_DIR)
 print('[spec] ROOT =', ROOT)
-print('[spec] 预下载 tiktoken 词表 ->', CACHE_DIR)
+print('[spec] downloading tiktoken vocab into', CACHE_DIR)
 subprocess.check_call(
     [sys.executable, '-c', "import tiktoken; tiktoken.encoding_for_model('gpt-4')"],
     env=_env)
-print('[spec] 词表缓存内容:', sorted(os.listdir(CACHE_DIR)))
+print('[spec] cached files:', sorted(os.listdir(CACHE_DIR)))
 
 datas = [
     (CACHE_DIR, 'data-gym-cache'),                    # 词表缓存，运行时由 rthook 指向它
