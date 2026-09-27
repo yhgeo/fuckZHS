@@ -41,6 +41,9 @@ MANIFEST
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
+# 例外：packaging/ 下的 spec 是手写的构建配置（源码），
+# 不是 PyInstaller 在仓库根目录生成的构建产物，需要纳入版本控制
+!packaging/*.spec
 
 # Installer logs
 pip-log.txt
