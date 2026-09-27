@@ -44,13 +44,39 @@
 
 ## 快速开始
 
-### 环境要求
+### 方式一：下载预编译可执行程序（推荐）
+
+到 [Releases](https://github.com/yhgeo/fuckZHS/releases) 下载对应平台的**单文件程序，不需要安装 Python**：
+
+| 文件 | 平台 | 体积 |
+|---|---|---|
+| `fuckzhs-linux-x86_64` | Linux x86-64（glibc ≥ 2.14，基本任何发行版都能跑） | 约 28 MB |
+| `fuckzhs-windows-x86_64.exe` | Windows x64 | 约 28 MB |
+
+```bash
+mkdir -p /opt/fuckzhs && cd /opt/fuckzhs
+curl -L -o fuckzhs https://github.com/yhgeo/fuckZHS/releases/latest/download/fuckzhs-linux-x86_64
+chmod +x fuckzhs
+
+# 扫码登录（二维码存到 ./data/qr/，拉到本地扫）
+./fuckzhs --fetch --show_in_terminal --image_path ./data/qr
+```
+
+> ⚠️ **必须把可执行文件放在可写目录**（如 `/opt/fuckzhs/`），不要放 `/usr/bin`。
+> 它会在**自己旁边**生成 `config.json`、`cookies.json`、`logs/`、`execution.json` ——
+> 这是有意设计：打包后代码位于临时解包目录，进程退出即删，所以状态文件必须落在可执行文件旁边。
+>
+> 词表已经内置在可执行文件里，**运行时不需要联网下载**（源码方式首次要下 40 秒）。
+
+### 方式二：从源码运行
+
+#### 环境要求
 
 - Linux / macOS / Windows 均可（本分支在 Ubuntu 24.04 + Python 3.12.3 上验证）
 - Python 3.10 及以上
 - 服务器部署**不需要**图形界面
 
-### 1. 拉代码、建虚拟环境、装依赖
+#### 1. 拉代码、建虚拟环境、装依赖
 
 ```bash
 git clone https://github.com/yhgeo/fuckZHS.git
@@ -64,7 +90,7 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -i https://mirrors.aliyun.com/pypi/simple/ -r requirements.txt
 ```
 
-### 2. 预热 tiktoken 词表（**别跳过**）
+#### 2. 预热 tiktoken 词表（**别跳过**）
 
 `tiktoken` 默认把词表缓存在 `/tmp`。而 systemd 的 `PrivateTmp=true` 会给每次运行一个独立的 `/tmp`——
 结果是**每次跑 AI 课程都要重新从 Azure 下载词表**。实测首次 **39.8 秒**，缓存后 **0.388 秒**。
@@ -77,7 +103,7 @@ TIKTOKEN_CACHE_DIR=./data/tiktoken-cache \
 
 之后每次运行都要带上 `TIKTOKEN_CACHE_DIR` 指向这个目录（`deploy/` 里的脚本已经带上了）。
 
-### 3. 扫码登录
+#### 3. 扫码登录
 
 ```bash
 .venv/bin/python main.py --fetch --show_in_terminal --image_path ./data/qr
@@ -87,13 +113,26 @@ TIKTOKEN_CACHE_DIR=./data/tiktoken-cache \
 - `--fetch` 会在登录后**只拉课程列表就退出**，不会碰任何课程
 - 登录成功后生成 `cookies.json`，之后运行会自动走 `Successfully recovered from saved cookies`，无需再扫码
 
-### 4. 确认可用
+#### 4. 确认可用
 
 ```bash
 .venv/bin/python main.py --fetch
 ```
 
 看到 `Successfully recovered from saved cookies` 就说明登录态有效，并且能正常访问课程接口。
+
+### 自己构建可执行程序
+
+仓库已配好 PyInstaller 配置和 GitHub Actions 工作流：
+
+```bash
+pip install -r requirements.txt pyinstaller
+pyinstaller --clean --noconfirm packaging/fuckzhs.spec
+# 产物：dist/fuckzhs（Linux/macOS）或 dist/fuckzhs.exe（Windows）
+```
+
+推送 `v*` 格式的 tag 会自动触发 [release.yml](.github/workflows/release.yml)，
+在 ubuntu / windows 上矩阵构建并把产物发布到 Releases。
 
 ---
 

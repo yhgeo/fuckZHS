@@ -1,0 +1,93 @@
+name: Build and release
+
+# 打 tag（v*）时自动构建单文件可执行程序并创建 release。
+# 也可以在 Actions 页面手动触发（workflow_dispatch），此时只构建并上传 artifact，不创建 release。
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.artifact }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: fuckzhs-linux-x86_64
+            built: dist/fuckzhs
+          - os: windows-latest
+            artifact: fuckzhs-windows-x86_64.exe
+            built: dist/fuckzhs.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Build
+        run: pyinstaller --clean --noconfirm packaging/fuckzhs.spec
+
+      # 冒烟测试：产物至少能启动并打印帮助。
+      # 在临时目录里跑，避免 config.json / logs 落到仓库里。
+      - name: Smoke test
+        shell: bash
+        run: |
+          mkdir -p smoke && cd smoke
+          "../${{ matrix.built }}" --help > help.txt 2>&1
+          cat help.txt
+          grep -q "ZHS Fucker" help.txt
+          test -f config.json && echo "OK: 状态文件落在可执行文件旁边"
+
+      - name: Rename artifact
+        shell: bash
+        run: |
+          mkdir -p out
+          cp "${{ matrix.built }}" "out/${{ matrix.artifact }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: out/${{ matrix.artifact }}
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: artifacts
+        run: |
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            artifacts/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes

@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import sys
 import time
 import argparse
 import requests
@@ -159,23 +160,29 @@ if args.proxy:  # parse proxy
             proxies["socks5"] = args.proxy
         case [schema]:
             print(f"*Unsupported proxy type: {schema}")
-            exit(1)
+            sys.exit(1)
 
 # check update
-with open(getRealPath("meta.json"), "r") as f:
-    try:  # some exceptions won't be caught by 'with'
+# 冻结打包（PyInstaller）后 meta.json 会被打进可执行文件、解包到 sys._MEIPASS；
+# 未打包时它就在代码目录里。两处都找一下，都找不到就跳过更新检查。
+_meta_candidates = []
+if getattr(sys, "_MEIPASS", None):
+    _meta_candidates.append(os.path.join(sys._MEIPASS, "meta.json"))
+_meta_candidates.append(getRealPath("meta.json"))
+try:
+    with open(next(p for p in _meta_candidates if os.path.exists(p)), "r") as f:
         m = ObjDict(json.load(f))
-        url = f"https://raw.githubusercontent.com/{m.author}/fuckZHS/{m.branch}/meta.json"
-        r = ObjDict(requests.get(url, proxies=proxies, timeout=5).json())
-        current = m.version
-        latest = r.version
-        if versionCmp(current, latest) < 0:
-            print("*********************************\n" +
-                  f"New version available: {latest}\n" +
-                  f"Current version: {current}\n" +
-                  "*********************************\n")
-    except Exception:
-        print("*Failed to check update\n")
+    url = f"https://raw.githubusercontent.com/{m.author}/fuckZHS/{m.branch}/meta.json"
+    r = ObjDict(requests.get(url, proxies=proxies, timeout=5).json())
+    current = m.version
+    latest = r.version
+    if versionCmp(current, latest) < 0:
+        print("*********************************\n" +
+              f"New version available: {latest}\n" +
+              f"Current version: {current}\n" +
+              "*********************************\n")
+except Exception:
+    print("*Failed to check update\n")
 
 # create an instance, now we are talking... or fucking
 fucker = Fucker(proxies=proxies, speed=args.speed, end_thre=args.threshold, limit=args.limit,
@@ -219,7 +226,7 @@ if not cookies_loaded:
                           indent=2, ensure_ascii=False)
     except Exception as e:
         print(e)
-        exit(1)
+        sys.exit(1)
 
 # you can add cookies manually by setting cookies property of a Fucker instance
 # notice that cookies of zhihuishu.com expires if you login again in somewhere else
@@ -266,7 +273,7 @@ if args.aicourse:
             validate_config(config)
         except ValueError as e:
             print(f"配置错误: {e}")
-            exit(1)
+            sys.exit(1)
 
         if args.noexam:
             no_exam = True
@@ -279,7 +286,7 @@ if args.aicourse:
         print(f"Error when fucking AI course {course_id}:\n{e}")
     finally:
         print("AI exam finished")
-        exit(0)
+        sys.exit(0)
 
 
 exec_list = getRealPath("execution.json")
@@ -297,7 +304,7 @@ if args.fetch:
                     for c in fucker.getPolymasList()]
     with open(exec_list, "w") as f:
         json.dump(courses, f, indent=4, ensure_ascii=False)
-    exit(0)
+    sys.exit(0)
 
 # get courses from file if not specified
 if not course and os.path.isfile(exec_list):
@@ -306,7 +313,7 @@ if not course and os.path.isfile(exec_list):
             course = [str(c["id"]) for c in json.load(f)]
         except Exception as e:
             print(f"*Failed to load course list from file: {e}")
-            exit(1)
+            sys.exit(1)
 
 # still not found?
 if not course:
@@ -328,7 +335,7 @@ if not course:
         print(f"*Captcha required, sleeping {wait//60} min then retrying (attempt {attempts}/{max_attempts})...")
         time.sleep(wait)
         cooldown = min(cooldown * 2, 60 * 60)
-    exit(0)
+    sys.exit(0)
 
 # auto detect mode
 for c in course.copy():

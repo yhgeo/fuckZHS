@@ -64,6 +64,11 @@ def terminalShowImage_tty(img):
     print(qr_str)
 
 def getDir():
+    # PyInstaller 等冻结打包后，__file__ 指向临时解包目录（sys._MEIPASS），
+    # 进程退出即删除 —— cookies.json / config.json / logs / execution.json 等
+    # 状态文件会随之丢失。冻结模式下改用可执行文件所在目录。
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.realpath(sys.executable))
     return os.path.dirname(os.path.realpath(__file__))
 
 def getConfigPath():
