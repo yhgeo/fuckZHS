@@ -50,8 +50,8 @@
 
 | 文件 | 平台 | 体积 |
 |---|---|---|
-| `fuckzhs-linux-x86_64` | Linux x86-64（glibc ≥ 2.14，基本任何发行版都能跑） | 约 28 MB |
-| `fuckzhs-windows-x86_64.exe` | Windows x64 | 约 28 MB |
+| `fuckzhs-linux-x86_64` | Linux x86-64（glibc ≥ 2.14，基本任何发行版都能跑） | 约 41 MB |
+| `fuckzhs-windows-x86_64.exe` | Windows x64 | 约 26 MB |
 
 ```bash
 mkdir -p /opt/fuckzhs && cd /opt/fuckzhs
