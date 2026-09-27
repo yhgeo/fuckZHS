@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# fuckzhs-daily —— 所有账号的每日刷课
+#
+# 账号来源：
+#   main                    → /opt/fuckzhs
+#   其他                    → /opt/fuckzhs-accounts/<账号名>
+# 每个账号的课程列表来自该实例目录下的 courses.conf，格式：
+#   <课程ID>|<显示名>|<重看阈值，可留空>
+#
+# 为什么每门课要单独调用一次（而不是一次跑完）：
+#   内置的 -l 是「所有课程共享」的每日上限（fucker.py:108），跑完第一门课预算就耗尽。
+#   所以每门课单独调用，并在调用前重置 daily_limit.json，让每门课拿到独立预算。
+#
+# 关于每门课的时长换算（见部署文档的数值模拟）：
+#   主循环有 0.8%/秒概率触发 60 秒暂停，且暂停期间进度回退到上次上报点，
+#   吃掉了大部分倍速收益。实测：课程进度 ≈ 0.95 × MINUTES，所以 32 ≈ 30 分钟。
+#
+# 关于重看阈值：设成 >1.0 就会让已看完的视频继续往后播（fucker.py:533），
+#   用来给「视频已全部看完」的课产生学习活动。是否计入平台学习时长未验证。
+#
+# 环境变量：
+#   ZHS_MINUTES   每门课预算（分钟），默认 32
+#   ZHS_MAXJOBS   同时最多跑几个账号，默认 4（每个进程约 96MB 内存）
+#   ZHS_STAGGER   账号之间错开启动的秒数，默认 120（降低「同一 IP 同时多账号」的特征）
+#
+# 用法：
+#   sudo fuckzhs-daily
+#   sudo ZHS_MINUTES=40 fuckzhs-daily
+#   sudo fuckzhs-daily --dry-run
+set -uo pipefail
+
+ROOT=/opt/fuckzhs
+ACC_ROOT=/opt/fuckzhs-accounts
+PY="$ROOT/.venv/bin/python"
+TIKTOKEN_DIR="$ROOT/data/tiktoken-cache"
+
+MINUTES="${ZHS_MINUTES:-32}"
+MAXJOBS="${ZHS_MAXJOBS:-4}"
+STAGGER="${ZHS_STAGGER:-120}"
+
+DRY=0
+[ "${1:-}" = "--dry-run" ] && DRY=1
+
+export TIKTOKEN_CACHE_DIR="$TIKTOKEN_DIR" LANG=C.UTF-8 PYTHONIOENCODING=utf-8
+
+# root 时降权到 fuckzhs；systemd 里已经是 fuckzhs，不会走这里
+if [ "$(id -u)" -eq 0 ]; then
+  args=()
+  [ "$DRY" = "1" ] && args+=(--dry-run)
+  exec runuser -u fuckzhs -- env \
+    ZHS_MINUTES="$MINUTES" ZHS_MAXJOBS="$MAXJOBS" ZHS_STAGGER="$STAGGER" \
+    TIKTOKEN_CACHE_DIR="$TIKTOKEN_DIR" LANG=C.UTF-8 PYTHONIOENCODING=utf-8 \
+    "$0" "${args[@]}"
+fi
+
+log() { printf '[%s] %s\n' "$(date '+%F %T')" "$*"; }
+
+run_account() {   # run_account <账号名> <实例目录>
+  local name="$1" d="$2" conf="$d/courses.conf"
+  if [ ! -s "$conf" ] || ! grep -qvE '^[[:space:]]*(#|$)' "$conf"; then
+    log "[$name] courses.conf 为空，跳过"
+    return 0
+  fi
+  log "[$name] === 账号开始 ==="
+  local raw_cid raw_name raw_thre cid cname thre rc
+  local extra
+  while IFS='|' read -r raw_cid raw_name raw_thre; do
+    cid=$(printf '%s' "$raw_cid"  | sed 's/#.*//; s/^[[:space:]]*//; s/[[:space:]]*$//')
+    cname=$(printf '%s' "$raw_name" | sed 's/#.*//; s/^[[:space:]]*//; s/[[:space:]]*$//')
+    thre=$(printf '%s' "$raw_thre" | sed 's/#.*//; s/^[[:space:]]*//; s/[[:space:]]*$//')
+    [ -z "$cid" ] && continue
+    extra=()
+    [ -n "$thre" ] && extra=(-t "$thre")
+    log "[$name] --- ${cname:-$cid}（$cid）${thre:+, 重看阈值 $thre} ---"
+    if [ "$DRY" = "1" ]; then
+      log "[$name]     [dry-run] $PY $d/main.py -c $cid -l $MINUTES ${extra[*]}"
+      continue
+    fi
+    rm -f "$d/daily_limit.json"     # 重置预算，让本门课拿到独立的每日额度
+    "$PY" "$d/main.py" -c "$cid" -l "$MINUTES" "${extra[@]}"
+    rc=$?
+    [ "$rc" -ne 0 ] && log "[$name] !!! ${cname:-$cid} 退出码 $rc，继续下一门"
+  done < "$conf"
+  rm -f "$d/daily_limit.json"
+  log "[$name] === 账号结束 ==="
+}
+
+# 收集账号列表
+ACCOUNTS=("main|$ROOT")
+if [ -d "$ACC_ROOT" ]; then
+  for d in "$ACC_ROOT"/*/; do
+    [ -d "$d" ] || continue
+    ACCOUNTS+=("$(basename "$d")|${d%/}")
+  done
+fi
+
+log "=== 每日刷课开始：${#ACCOUNTS[@]} 个账号，每门课 ${MINUTES} 分钟，最多并发 ${MAXJOBS}，错开 ${STAGGER}s ==="
+
+running=0
+first=1
+for entry in "${ACCOUNTS[@]}"; do
+  name="${entry%%|*}"
+  d="${entry#*|}"
+  if [ "$running" -ge "$MAXJOBS" ]; then
+    wait -n
+    running=$((running - 1))
+  elif [ "$first" = "0" ]; then
+    sleep "$STAGGER"
+  fi
+  ( run_account "$name" "$d" ) &
+  running=$((running + 1))
+  first=0
+done
+wait
+log "=== 全部账号结束 ==="

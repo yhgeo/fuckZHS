@@ -1,0 +1,25 @@
+[Unit]
+Description=fuckZHS 每日刷课（每门课各自刷满预算）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=fuckzhs
+Group=fuckzhs
+WorkingDirectory=/opt/fuckzhs
+Environment=TZ=Asia/Shanghai
+Environment=LANG=C.UTF-8
+Environment=PYTHONIOENCODING=utf-8
+Environment=TIKTOKEN_CACHE_DIR=/opt/fuckzhs/data/tiktoken-cache
+Environment=ZHS_MINUTES=32
+ExecStart=/usr/local/bin/fuckzhs-daily
+TimeoutStartSec=infinity
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/fuckzhs
+StandardOutput=journal
+StandardError=journal

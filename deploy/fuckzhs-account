@@ -1,0 +1,199 @@
+#!/usr/bin/env bash
+# fuckzhs-account —— fuckZHS 多账号管理
+#
+# 背景：fuckZHS 把所有状态文件（cookies.json / daily_limit.json / execution.json / logs/）
+# 都写在「代码目录」里（utils.py 的 getDir() = utils.py 所在目录的 realpath），
+# 而且没有任何环境变量可以重定向。所以每个账号必须有一份独立的代码副本。
+# 注意：不能用软链接 —— realpath 会把软链接解析回原目录，隔离就失效了。
+# venv 和 tiktoken 缓存是只读的，可以跨账号共享。
+#
+# 用法见 `fuckzhs-account` 不带参数时的帮助。
+set -uo pipefail
+
+ROOT=/opt/fuckzhs
+ACC_ROOT=/opt/fuckzhs-accounts
+PY="$ROOT/.venv/bin/python"
+TIKTOKEN_DIR="$ROOT/data/tiktoken-cache"
+CODE_FILES=(main.py fucker.py utils.py logger.py ObjDict.py sign.py zd_utils.py push.py meta.json)
+
+log() { printf '[%s] %s\n' "$(date '+%F %T')" "$*"; }
+die() { echo "错误: $*" >&2; exit 1; }
+need_root() { [ "$(id -u)" -eq 0 ] || die "需要 root 权限：sudo $0 $*"; }
+
+acc_dir() {
+  case "${1:-}" in
+    "")   die "缺少账号名" ;;
+    main) echo "$ROOT" ;;
+    *)    echo "$ACC_ROOT/$1" ;;
+  esac
+}
+
+list_accounts() {
+  echo main
+  if [ -d "$ACC_ROOT" ]; then
+    find "$ACC_ROOT" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort
+  fi
+}
+
+# 以 fuckzhs 用户执行某个实例的 main.py
+run_py() {   # run_py <实例目录> <main.py 参数...>
+  local d="$1"; shift
+  local ea=(TIKTOKEN_CACHE_DIR="$TIKTOKEN_DIR" LANG=C.UTF-8 PYTHONIOENCODING=utf-8)
+  if [ "$(id -u)" -eq 0 ]; then
+    runuser -u fuckzhs -- env "${ea[@]}" "$PY" "$d/main.py" "$@"
+  else
+    env "${ea[@]}" "$PY" "$d/main.py" "$@"
+  fi
+}
+
+# 从 execution.json 生成该账号的 courses.conf
+gen_courses_conf() {
+  local d="$1"
+  python3 - "$d/execution.json" "$d/courses.conf" <<'PYEOF'
+import json, os, sys
+src, dst = sys.argv[1], sys.argv[2]
+if not os.path.exists(src):
+    print("  execution.json 不存在，跳过生成")
+    raise SystemExit(0)
+items = json.load(open(src, encoding='utf-8'))
+# execution.json 里共享课和 polymas 会各出现一次（courseId/recruitId 相同），
+# 优先保留共享课（zhidao secret 含字母，不以 polymas: 开头）
+zhidao = [c for c in items if not str(c.get('id', '')).startswith('polymas:')]
+chosen = zhidao or items
+seen, out = set(), []
+for c in chosen:
+    k = str(c.get('id'))
+    if k in seen:
+        continue
+    seen.add(k)
+    out.append(c)
+with open(dst, 'w', encoding='utf-8') as f:
+    f.write("# <课程ID>|<显示名>|<重看阈值，可留空>\n")
+    for c in out:
+        f.write("%s|%s|\n" % (c.get('id'), c.get('name', '')))
+print("  已生成 courses.conf：%d 门课" % len(out))
+PYEOF
+}
+
+cmd_add() {
+  local name="${1:-}"
+  [ -n "$name" ] || die "用法: fuckzhs-account add <账号名>"
+  [ "$name" = main ] && die "main 是主账号，已存在"
+  [[ "$name" =~ ^[a-zA-Z0-9_-]+$ ]] || die "账号名只能包含字母/数字/下划线/连字符"
+  local d="$ACC_ROOT/$name"
+  [ -e "$d" ] && die "账号 $name 已存在：$d"
+
+  mkdir -p "$d/data/qr" "$d/logs"
+  local f
+  for f in "${CODE_FILES[@]}"; do
+    cp -f "$ROOT/$f" "$d/$f" || die "复制 $f 失败"
+  done
+  cp -f "$ROOT/config.json" "$d/config.json"
+  python3 - "$d/config.json" "$d/data/qr" <<'PYEOF'
+import json, sys
+p, qr = sys.argv[1], sys.argv[2]
+c = json.load(open(p, encoding='utf-8'))
+c['image_path'] = qr
+c['username'] = ''
+c['password'] = ''
+json.dump(c, open(p, 'w', encoding='utf-8'), indent=4, ensure_ascii=False)
+PYEOF
+  printf '# <课程ID>|<显示名>|<重看阈值，可留空>\n' > "$d/courses.conf"
+  chown -R fuckzhs:fuckzhs "$d"
+  chmod 750 "$d"
+  chmod 700 "$d/data" "$d/data/qr"
+  chmod 600 "$d/config.json"
+  log "已创建账号实例：$name → $d"
+  log "下一步：sudo $0 login $name    （启动扫码，二维码存到 $d/data/qr/）"
+}
+
+cmd_login() {
+  local name="${1:-}"
+  local d; d=$(acc_dir "$name")
+  [ -d "$d" ] || die "账号 $name 不存在，先执行: $0 add $name"
+  rm -f "$d"/data/qr/*.png 2>/dev/null
+  log "[$name] 启动扫码登录（成功后会自动拉取课程列表）..."
+  run_py "$d" --fetch
+  if [ -f "$d/cookies.json" ]; then
+    chmod 600 "$d/cookies.json"
+    log "[$name] 登录成功，cookies.json 已生成"
+    gen_courses_conf "$d"
+  else
+    log "[$name] 登录未完成（未生成 cookies.json）"
+    return 1
+  fi
+}
+
+cmd_fetch() {
+  local name="${1:-}"
+  local d; d=$(acc_dir "$name")
+  [ -d "$d" ] || die "账号 $name 不存在"
+  log "[$name] 刷新课程列表..."
+  run_py "$d" --fetch
+  gen_courses_conf "$d"
+  log "[$name] 当前 courses.conf："
+  sed 's/^/    /' "$d/courses.conf"
+}
+
+cmd_list() {
+  local a d lg n
+  for a in $(list_accounts); do
+    d=$(acc_dir "$a")
+    [ -d "$d" ] || continue
+    if [ -f "$d/cookies.json" ]; then lg="已登录"; else lg="未登录"; fi
+    # 注意：grep -c 在计数为 0 时退出码非零，必须 || true 兜住，否则会多输出一行
+    n=$(grep -cvE '^[[:space:]]*(#|$)' "$d/courses.conf" 2>/dev/null || true)
+    [ -z "$n" ] && n=0
+    printf '账号 %s\n  目录   : %s\n  登录态 : %s\n  课程数 : %s\n' "$a" "$d" "$lg" "$n"
+  done
+}
+
+cmd_sync() {
+  local a d f
+  for a in $(list_accounts); do
+    [ "$a" = main ] && continue
+    d=$(acc_dir "$a")
+    [ -d "$d" ] || continue
+    for f in "${CODE_FILES[@]}"; do
+      cp -f "$ROOT/$f" "$d/$f"
+    done
+    chown -R fuckzhs:fuckzhs "$d"
+    log "[$a] 代码副本已同步到最新"
+  done
+}
+
+cmd_rm() {
+  local name="${1:-}" force="${2:-}"
+  [ "$name" = main ] && die "不能删除主账号 main"
+  local d; d=$(acc_dir "$name")
+  [ -d "$d" ] || die "账号 $name 不存在"
+  [ "$force" = "--force" ] || die "删除会一并删掉该账号的 cookies.json。确认请加 --force：sudo $0 rm $name --force"
+  rm -rf "$d"
+  log "已删除账号 $name（$d）"
+}
+
+need_root
+cmd="${1:-}"
+shift || true
+case "$cmd" in
+  add)   cmd_add "$@" ;;
+  login) cmd_login "$@" ;;
+  fetch) cmd_fetch "$@" ;;
+  list)  cmd_list ;;
+  sync)  cmd_sync ;;
+  rm)    cmd_rm "$@" ;;
+  *)
+    cat <<'USAGE'
+fuckzhs-account —— fuckZHS 多账号管理
+
+  sudo fuckzhs-account list                     列出所有账号
+  sudo fuckzhs-account add <账号名>              创建账号实例（复制代码，共享 venv）
+  sudo fuckzhs-account login <账号名>            扫码登录 + 拉取课程列表
+  sudo fuckzhs-account fetch <账号名>            刷新课程列表（更新 courses.conf）
+  sudo fuckzhs-account sync                     把代码副本同步到主目录最新版本
+  sudo fuckzhs-account rm <账号名> --force       删除账号实例
+
+主账号 main 固定在 /opt/fuckzhs/，其他账号在 /opt/fuckzhs-accounts/<账号名>/
+USAGE
+    exit 1 ;;
+esac

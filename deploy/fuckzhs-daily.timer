@@ -1,0 +1,11 @@
+[Unit]
+Description=fuckZHS 每日刷课定时器
+
+[Timer]
+OnCalendar=*-*-* 09:00:00
+RandomizedDelaySec=30min
+Persistent=true
+Unit=fuckzhs-daily.service
+
+[Install]
+WantedBy=timers.target
