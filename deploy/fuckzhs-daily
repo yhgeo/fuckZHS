@@ -61,6 +61,19 @@ run_account() {   # run_account <账号名> <实例目录>
     log "[$name] courses.conf 为空，跳过"
     return 0
   fi
+
+  # 预检登录态。cookies 失效时 main.py 会回退到扫码登录，在无人值守环境里
+  # 没有人能扫码 —— 脚本会一直卡着不返回，把后续的定时触发全部堵死。
+  # 这里先花几秒确认登录有效，失效就立刻跳过并给出明确提示。
+  local chk
+  chk=$("$PY" "$ROOT/deploy/check_login.py" "$d" 2>&1 | tail -1)
+  if [ "${chk#LOGIN_OK}" = "$chk" ]; then
+    log "[$name] 登录态失效，跳过本账号：$chk"
+    log "[$name] 请重新登录：sudo fuckzhs-account login $name"
+    return 1
+  fi
+  log "[$name] $chk"
+
   log "[$name] === 账号开始 ==="
   local raw_cid raw_name raw_thre cid cname thre rc
   local extra

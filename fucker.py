@@ -122,6 +122,10 @@ class Fucker:
         self.captcha_hit = False  # set True when the server demands a captcha
         self.break_every = 45 * 60  # take a long break every N seconds of watching
         self.active_time = 0    # real seconds watched since last long break
+        # 二维码过期后的重试上限。上游原实现是无上限递归，无人值守运行时
+        # （例如 cookies 失效后由定时任务触发）会每 3 分钟换一张二维码、
+        # 无限循环下去，把定时任务的后续触发全部堵死。
+        self.qr_max_attempts = 5
 
     @property # cannot directly manipulate _cookies property, we need to parse uuid from cookies
     def cookies(self) -> RequestsCookieJar:
@@ -204,7 +208,7 @@ class Fucker:
             logger.exception(e)
             raise Exception(f"Login failed: {e}")
 
-    def _qrlogin(self, qr_callback):
+    def _qrlogin(self, qr_callback, _attempt: int = 1):
         """Login using qr code"""
         login_page = "https://passport.zhihuishu.com/login?service=https://onlineservice-api.zhihuishu.com/login/gologin"
         qr_page = "https://passport.zhihuishu.com/qrCodeLogin/getLoginQrImg"
@@ -253,7 +257,15 @@ class Fucker:
                         raise Exception(f"Unknown Response {msg.msg}")
 
         except TimeLimitExceeded:
-            self._qrlogin(qr_callback) # timeout? try again!
+            # 二维码过期 → 换一张重试，但必须有上限。
+            # 上游原实现是无条件递归，无人值守（cookies 失效后由定时任务触发）
+            # 时会无限循环，每 3 分钟生成一张二维码，永远不返回。
+            if _attempt >= self.qr_max_attempts:
+                raise Exception(
+                    f"QR code expired {self.qr_max_attempts} times in a row, giving up. "
+                    f"cookies 可能已失效，请重新登录。")
+            logger.warning(f"QR code expired, retrying ({_attempt}/{self.qr_max_attempts})")
+            self._qrlogin(qr_callback, _attempt + 1)
         except Exception as e:
             logger.exception(e)
             raise Exception(f"QR login failed: {e}")

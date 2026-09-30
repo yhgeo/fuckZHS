@@ -14,7 +14,10 @@ Environment=PYTHONIOENCODING=utf-8
 Environment=TIKTOKEN_CACHE_DIR=/opt/fuckzhs/data/tiktoken-cache
 Environment=ZHS_MINUTES=32
 ExecStart=/usr/local/bin/fuckzhs-daily
-TimeoutStartSec=infinity
+# 正常情况下 3 门课约 100 分钟。设一个上限，防止某次运行卡死（接口异常、
+# 网络挂起、登录失效后空转）无限期占用 —— 服务一直 active 时，systemd
+# 会丢弃后续的定时触发，每日任务就此断掉且无人察觉。
+TimeoutStartSec=10800
 Nice=10
 NoNewPrivileges=true
 PrivateTmp=true
