@@ -1,0 +1,29 @@
+[Unit]
+Description=fuckZHS 扫码登录网页服务（浏览器打开即可看到当前二维码）
+Documentation=file:/opt/fuckzhs/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fuckzhs
+Group=fuckzhs
+WorkingDirectory=/opt/fuckzhs
+Environment=ZHS_QR_PORT=18080
+Environment=ZHS_APP_DIR=/opt/fuckzhs
+ExecStart=/opt/fuckzhs/.venv/bin/python /opt/fuckzhs/deploy/qr_web.py
+Restart=on-failure
+RestartSec=5
+
+# 安全加固：这是个对公网监听的服务，尽量收窄权限
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/fuckzhs
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

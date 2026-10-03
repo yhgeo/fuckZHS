@@ -435,8 +435,26 @@ if watch_state == 1 and self.end_thre <= 1.0:   # check end_thre in case someone
 ## 常见问题
 
 **Q：cookie 失效了怎么办？**
-重新扫码。删掉 `cookies.json`，然后跑一次带 `--fetch --show_in_terminal --image_path <目录>` 的命令。
-判断是否失效：跑 `--fetch`，看不到 `Successfully recovered from saved cookies` 就是失效了。
+重新扫码。判断是否失效：跑一次 `check_login.py`（或 `main.py --fetch`），
+看不到 `Successfully recovered from saved cookies` 就是失效了。
+
+服务器上可以用 `deploy/qr_web.py` 起一个网页，浏览器打开就能看到当前二维码：
+
+```bash
+sudo install -m755 deploy/qr_web.py /opt/fuckzhs/deploy/qr_web.py
+sudo install -m644 deploy/zhs-qr-web.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now zhs-qr-web
+
+# 取访问地址（路径带随机 secret）
+echo "http://<服务器IP>:18080/$(sudo cat /opt/fuckzhs/data/qr_web_secret)/"
+```
+
+在**电脑**上打开这个地址（不能是手机——同一台手机没法扫自己屏上的码），
+点「开始扫码登录」，用手机 App 扫页面上的二维码即可。
+
+> ⚠️ 二维码本身就是登录凭据，**谁看到谁就能登你的号**。所以路径带随机 secret、
+> 二维码只在登录进行中存在。登录完成后建议 `sudo systemctl stop zhs-qr-web`，
+> 并在云服务商的安全组里关掉这个端口。
 
 **Q：为什么进度不涨？**
 先看 `logs/info.log` 里是不是满屏 `already watched`——说明这门课的视频已经看完了。用上面的「重看」办法。
