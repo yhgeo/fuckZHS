@@ -61,13 +61,17 @@ def latest_qr():
 
 
 def login_running() -> bool:
-    with _lock:
-        if _login_proc is None:
-            return False
-        if _login_proc.poll() is None:
-            return True
-    # 进程已退出：顺便清理旧二维码，避免过期码被误扫
-    return False
+    """是否有登录流程在跑。
+
+    刻意不依赖 Popen 句柄 —— 服务重启后句柄会丢，会被误判成「没在跑」，
+    于是重复启动登录进程（还会把已有的二维码删掉）。直接按进程名查最可靠。
+    """
+    try:
+        r = subprocess.run(["pgrep", "-f", "main.py --fetch"],
+                           capture_output=True, timeout=5)
+        return r.returncode == 0
+    except Exception:
+        return False
 
 
 def cookie_ok(force=False):
@@ -92,8 +96,11 @@ def cookie_ok(force=False):
 
 def start_login() -> str:
     global _login_proc
+    if login_running():
+        return "已在运行"
     with _lock:
-        if _login_proc is not None and _login_proc.poll() is None:
+        # 拿锁后再确认一次，避免并发点击重复启动
+        if login_running():
             return "已在运行"
         try:
             for n in os.listdir(QR_DIR):
@@ -113,6 +120,72 @@ def start_login() -> str:
             [PY, MAIN, "--fetch", "--show_in_terminal", "--image_path", QR_DIR],
             cwd=APP_DIR, env=env, stdout=log, stderr=subprocess.STDOUT)
         return "已启动"
+
+
+RUN_MARKER = os.path.join(APP_DIR, "data", "last_run_ok")
+
+
+def ran_today() -> bool:
+    """今天是否已经跑过刷课（由 fuckzhs-daily 写的标记文件判断）。"""
+    try:
+        with open(RUN_MARKER, encoding="utf-8") as f:
+            return f.read().strip() == time.strftime("%Y-%m-%d")
+    except OSError:
+        return False
+
+
+def _any_proc(pattern: str) -> bool:
+    try:
+        return subprocess.run(["pgrep", "-f", pattern],
+                              capture_output=True, timeout=5).returncode == 0
+    except Exception:
+        return False
+
+
+def maybe_start_daily() -> str:
+    """登录成功后调用：如果今天还没跑过刷课，就启动一次。
+
+    这就是「早上 cookie 失效被跳过 → 用户扫码登录 → 自动补跑」的闭环。
+    返回空字符串表示不需要或已在跑。
+    """
+    if ran_today():
+        return ""
+    if _any_proc("fuckzhs-daily") or _any_proc("main.py -c"):
+        return ""
+    try:
+        r = subprocess.run(
+            ["systemctl", "start", "--no-block", "fuckzhs-daily.service"],
+            capture_output=True, timeout=20)
+        if r.returncode == 0:
+            print("[daily] 今天还没跑，已启动刷课任务", flush=True)
+            return "已启动今天的刷课任务"
+        err = (r.stderr or b"").decode("utf-8", "replace").strip()[:150]
+        print("[daily] 启动失败: %s" % err, flush=True)
+        return "启动刷课失败: %s" % err
+    except Exception as e:
+        print("[daily] 启动异常: %s" % e, flush=True)
+        return "启动刷课异常: %s" % e
+
+
+def watcher():
+    """后台线程：盯着登录流程，一旦结束且登录成功，就补跑今天的任务。
+
+    只在「运行 → 结束」这个跳变时做一次网络检查，不会一直轮询接口。
+    """
+    was = False
+    while True:
+        try:
+            now = login_running()
+            if was and not now:
+                time.sleep(3)                      # 等 cookies.json 落盘
+                ok, msg = cookie_ok(force=True)
+                print("[watcher] 登录流程结束，登录态: %s" % ("有效" if ok else "无效"), flush=True)
+                if ok:
+                    maybe_start_daily()
+            was = now
+        except Exception as e:
+            print("[watcher] 异常: %s" % e, flush=True)
+        time.sleep(10)
 
 
 PAGE = """<!doctype html>
@@ -140,14 +213,18 @@ PAGE = """<!doctype html>
 </style></head><body>
   <h1>智慧树登录二维码</h1>
   __BODY__
+  <div class="st dim" style="font-size:13px">__DAILY__</div>
   <div class="hint">
     用手机「智慧树」或「知到」App 的<b>扫一扫</b>扫描上方二维码。<br>
     页面每 4 秒自动刷新，过期会自动换成新的。
   </div>
-<script>
-setTimeout(function(){location.reload()},4000);
-</script>
+__REFRESH__
 </body></html>"""
+
+# 只在「正在生成二维码」或「已显示二维码」时才自动刷新；
+# 登录态有效 / 未登录时页面是静态的，避免无意义地反复重载。
+REFRESH_ON = "<script>setTimeout(function(){location.reload()},4000);</script>"
+REFRESH_OFF = ""
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -191,35 +268,50 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
 
         if sub == "start":
-            msg = start_login()
+            start_login()
             _cookie_cache["ok"] = None  # 让下次状态检查重新跑
-            self._send(200, "text/html; charset=utf-8",
-                       PAGE.replace("__BODY__",
-                                    '<div class="st warn">%s，正在生成二维码…</div>' % msg))
+            # 必须重定向回首页，由首页渲染二维码。
+            # 注意：不能让 /start 自己带自动刷新 —— 那会每 4 秒重新触发一次
+            # start_login()，页面永远停在「已在运行」，跳不到二维码视图。
+            self._send(302, "text/plain; charset=utf-8", b"",
+                       {"Location": "/%s/" % sec})
             return
 
         # 首页
         running = login_running()
         f, mt = latest_qr()
         ck, ckmsg = cookie_ok()
+        refresh = REFRESH_OFF
 
-        if ck is True and not running:
-            body = ('<div class="st ok">✅ 登录态有效</div>'
-                    '<div class="st dim" style="font-size:12px">%s</div>' % ckmsg)
-        elif running and f:
+        if running and f:
             age = int(time.time() - mt)
             body = ('<div class="card"><img src="/%s/qr.png?t=%d" alt="登录二维码"></div>'
                     '<div class="st %s">二维码已生成 %d 秒（有效期约 180 秒）</div>'
                     % (sec, int(time.time()), "ok" if age < 140 else "warn", age))
+            refresh = REFRESH_ON
         elif running:
             body = '<div class="st warn">正在生成二维码…</div>'
+            refresh = REFRESH_ON
+        elif ck is True:
+            body = ('<div class="st ok">✅ 登录态有效</div>'
+                    '<div class="st dim" style="font-size:12px">%s</div>' % ckmsg)
         else:
             body = ('<div class="st bad">登录态已失效</div>'
                     '<a class="btn" href="/%s/start">开始扫码登录</a>' % sec)
             if ckmsg:
                 body += '<div class="st dim" style="font-size:12px">%s</div>' % ckmsg
 
-        self._send(200, "text/html; charset=utf-8", PAGE.replace("__BODY__", body))
+        if ran_today():
+            daily = "今日刷课任务：已完成"
+        elif _any_proc("fuckzhs-daily") or _any_proc("main.py -c"):
+            daily = "今日刷课任务：进行中…"
+        else:
+            daily = "今日刷课任务：待运行（扫码登录后会自动启动）"
+
+        html = (PAGE.replace("__BODY__", body)
+                    .replace("__DAILY__", daily)
+                    .replace("__REFRESH__", refresh))
+        self._send(200, "text/html; charset=utf-8", html)
 
 
 class Server(http.server.ThreadingHTTPServer):
@@ -230,7 +322,9 @@ class Server(http.server.ThreadingHTTPServer):
 if __name__ == "__main__":
     os.makedirs(QR_DIR, exist_ok=True)
     sec = get_secret()
+    threading.Thread(target=watcher, daemon=True).start()
     with Server(("0.0.0.0", PORT), Handler) as httpd:
         print("listening on 0.0.0.0:%d" % PORT, flush=True)
         print("url: http://<server-ip>:%d/%s/" % (PORT, sec), flush=True)
+        print("today's run done: %s" % ran_today(), flush=True)
         httpd.serve_forever()

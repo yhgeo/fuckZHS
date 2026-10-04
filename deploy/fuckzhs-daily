@@ -95,6 +95,10 @@ run_account() {   # run_account <账号名> <实例目录>
     [ "$rc" -ne 0 ] && log "[$name] !!! ${cname:-$cid} 退出码 $rc，继续下一门"
   done < "$conf"
   rm -f "$d/daily_limit.json"
+  # 标记「今天这个账号真的跑过课」。
+  # 网页服务（deploy/qr_web.py）靠它判断扫码登录后要不要补跑今天的任务 ——
+  # 只写日期，不关心成功与否，因为「跑过」才是避免重复触发的依据。
+  date +%F > "$ROOT/data/last_run_ok" 2>/dev/null
   log "[$name] === 账号结束 ==="
 }
 

@@ -1,0 +1,17 @@
+// 允许 fuckzhs 用户启动 fuckzhs-daily.service。
+//
+// 用途：扫码登录网页服务（deploy/qr_web.py）检测到登录成功后，要补跑当天的
+// 刷课任务（早上 cookie 失效被跳过的情况）。该服务跑在 fuckzhs 用户下，
+// 默认没有权限操作 systemd 单元。
+//
+// 只授权这一个 unit 的启停，不放宽其他任何权限。
+
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.systemd1.manage-units" &&
+        subject.user == "fuckzhs") {
+        var unit = action.lookup("unit");
+        if (unit == "fuckzhs-daily.service") {
+            return polkit.Result.YES;
+        }
+    }
+});

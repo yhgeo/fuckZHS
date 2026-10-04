@@ -452,6 +452,17 @@ echo "http://<服务器IP>:18080/$(sudo cat /opt/fuckzhs/data/qr_web_secret)/"
 在**电脑**上打开这个地址（不能是手机——同一台手机没法扫自己屏上的码），
 点「开始扫码登录」，用手机 App 扫页面上的二维码即可。
 
+**登录成功后会自动化**：页面会显示「今日刷课任务」的状态。如果当天还没跑过
+（比如早上因为 cookie 失效被跳过了），服务会**自动补跑一次**，不用再手动执行。
+页面会显示「已完成 / 进行中 / 待运行」三种状态。
+
+> 自动补跑需要 polkit 授权（服务跑在 `fuckzhs` 用户下，默认没有操作 systemd 的权限）：
+> ```bash
+> sudo install -m644 deploy/50-fuckzhs-daily.rules /etc/polkit-1/rules.d/
+> sudo systemctl restart polkit
+> ```
+> 该规则**只授权启动 `fuckzhs-daily.service` 这一个单元**，不放宽其他权限。
+
 > ⚠️ 二维码本身就是登录凭据，**谁看到谁就能登你的号**。所以路径带随机 secret、
 > 二维码只在登录进行中存在。登录完成后建议 `sudo systemctl stop zhs-qr-web`，
 > 并在云服务商的安全组里关掉这个端口。
