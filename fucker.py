@@ -126,6 +126,10 @@ class Fucker:
         # （例如 cookies 失效后由定时任务触发）会每 3 分钟换一张二维码、
         # 无限循环下去，把定时任务的后续触发全部堵死。
         self.qr_max_attempts = 5
+        # 单个视频遇到滑块验证时的冷却重试次数。上游是 3 次（30/60/90 秒），
+        # 实测偏短 —— 平台频控未解除就重试，只会连续失败。改为 4 次、
+        # 60/120/180/240 秒的指数退避，给频控留出冷却窗口。
+        self.captcha_retries = 4
 
     @property # cannot directly manipulate _cookies property, we need to parse uuid from cookies
     def cookies(self) -> RequestsCookieJar:
@@ -502,21 +506,41 @@ class Fucker:
                             logger.info(f"Captcha required: {e}")
                             self._pushplus("fuckZHS","需要提供验证码")
                             self._bark("fuckZHS","需要提供验证码")
-                            tprint(f"{prefix*3}##Captcha: 需要滑块验证，请在知到APP/网页手动验证后等待重试...")
-                            # retry with backoff
-                            for retry in range(3):
-                                wait = 30 + retry * 30 + int(random() * 20)
-                                tprint(f"{prefix*3}##等待 {wait}s 后重试 ({retry+1}/3)...")
+                            tprint(f"{prefix*3}##Captcha: 被要求滑块验证，等待冷却后重试...")
+                            # 冷却 + 重试。上游原实现在 3 次重试失败后直接 `return`，
+                            # 会跳出整个课程的视频循环 —— 也就是「一个视频撞墙，整门课
+                            # 就此放弃」。三门课连着跑的无人值守场景下，最后那门课几乎
+                            # 每天都因此被掐断（表现为「只有一门课有记录」）。
+                            # 这里改为：冷却更久、重试更多次；仍失败时 **跳过这个视频**
+                            # （continue），而不是放弃整门课 —— 后面的视频往往是不同的
+                            # 章节，命中风控的概率更低，能救回来多少算多少。
+                            recovered = False
+                            for retry in range(self.captcha_retries):
+                                wait = 60 + retry * 60 + int(random() * 30)
+                                tprint(f"{prefix*3}##等待 {wait}s 后重试 ({retry+1}/{self.captcha_retries})...")
                                 time.sleep(wait)
                                 try:
                                     self.fuckZhidaoVideo(RAC_id, video.videoId)
                                     tprint(f"{prefix*3}##重试成功")
+                                    recovered = True
                                     break
                                 except CaptchaException:
                                     continue
-                            else:
-                                tprint(f"{prefix}##Captcha重试失败，请手动打开知到APP完成滑块验证后重新运行\a\n")
-                                return
+                                except TimeLimitExceeded as e:
+                                    # 冷却期间每日预算可能已经用完，正常收工
+                                    logger.info(f"Fucking time limit exceeded: {e}")
+                                    tprint(prefix)
+                                    tprint(f"{prefix}##Fucking time limit exceeded: {e}\n")
+                                    return
+                                except Exception as e:
+                                    logger.exception(e)
+                                    tprint(f"{prefix*3}##重试遇到其他错误: {e}"[:w_lim])
+                                    break
+                            if not recovered:
+                                # 视频级放弃，不影响后续视频。整个课程仍然会返回
+                                # 非零信息给上层（captcha_hit=True），便于日志统计。
+                                tprint(f"{prefix*3}##该视频验证码重试失败，跳过，继续后续视频")
+                                logger.warning(f"Captcha retries exhausted for video {video.name}, skipping")
                         except Exception as e:
                             logger.exception(e)
                             self._pushplus("fuckZHS",e)

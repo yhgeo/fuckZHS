@@ -76,7 +76,8 @@ run_account() {   # run_account <账号名> <实例目录>
 
   log "[$name] === 账号开始 ==="
   local raw_cid raw_name raw_thre cid cname thre rc
-  local extra
+  local extra out done_courses blocked_courses
+  done_courses=0; blocked_courses=0
   while IFS='|' read -r raw_cid raw_name raw_thre; do
     cid=$(printf '%s' "$raw_cid"  | sed 's/#.*//; s/^[[:space:]]*//; s/[[:space:]]*$//')
     cname=$(printf '%s' "$raw_name" | sed 's/#.*//; s/^[[:space:]]*//; s/[[:space:]]*$//')
@@ -90,11 +91,23 @@ run_account() {   # run_account <账号名> <实例目录>
       continue
     fi
     rm -f "$d/daily_limit.json"     # 重置预算，让本门课拿到独立的每日额度
-    "$PY" "$d/main.py" -c "$cid" -l "$MINUTES" "${extra[@]}"
+    # 捕获本门课的输出，事后统计它是「正常刷完」还是「被验证码挡住」。
+    # 以前这两者都无法从日志区分 —— 课程被验证码掐断时同样静默退出，
+    # 看起来和「刷完了」一模一样，导致问题拖了很久才被发现。
+    out=$("$PY" "$d/main.py" -c "$cid" -l "$MINUTES" "${extra[@]}" 2>&1)
     rc=$?
-    [ "$rc" -ne 0 ] && log "[$name] !!! ${cname:-$cid} 退出码 $rc，继续下一门"
+    printf '%s\n' "$out"
+    if printf '%s' "$out" | grep -q 'Captcha重试失败\|验证码重试失败'; then
+      blocked_courses=$((blocked_courses + 1))
+      log "[$name] !!! ${cname:-$cid} 遭验证码拦截（部分视频未完成）"
+    elif [ "$rc" -eq 0 ]; then
+      done_courses=$((done_courses + 1))
+    else
+      log "[$name] !!! ${cname:-$cid} 退出码 $rc，继续下一门"
+    fi
   done < "$conf"
   rm -f "$d/daily_limit.json"
+  log "[$name] 本轮小结：正常结束 $done_courses 门，验证码拦截 $blocked_courses 门"
   # 标记「今天这个账号真的跑过课」。
   # 网页服务（deploy/qr_web.py）靠它判断扫码登录后要不要补跑今天的任务 ——
   # 只写日期，不关心成功与否，因为「跑过」才是避免重复触发的依据。
