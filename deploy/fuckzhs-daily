@@ -22,6 +22,8 @@
 #   ZHS_MINUTES   每门课预算（分钟），默认 32
 #   ZHS_MAXJOBS   同时最多跑几个账号，默认 4（每个进程约 96MB 内存）
 #   ZHS_STAGGER   账号之间错开启动的秒数，默认 120（降低「同一 IP 同时多账号」的特征）
+#   ZHS_INTERVAL  进度回写间隔（秒），默认 90。平台对写接口有程序级风控，
+#                 密度过高会弹易盾滑块（code -12），调大此值可降低被拦概率。
 #
 # 用法：
 #   sudo fuckzhs-daily
@@ -37,6 +39,9 @@ TIKTOKEN_DIR="$ROOT/data/tiktoken-cache"
 MINUTES="${ZHS_MINUTES:-32}"
 MAXJOBS="${ZHS_MAXJOBS:-4}"
 STAGGER="${ZHS_STAGGER:-120}"
+# 进度回写间隔（秒），透传给 main.py 的 -i。平台对写接口有程序级风控，
+# 密度过高会弹易盾滑块（code -12）。调大这个值可降低被拦概率。
+INTERVAL="${ZHS_INTERVAL:-90}"
 
 DRY=0
 [ "${1:-}" = "--dry-run" ] && DRY=1
@@ -48,7 +53,7 @@ if [ "$(id -u)" -eq 0 ]; then
   args=()
   [ "$DRY" = "1" ] && args+=(--dry-run)
   exec runuser -u fuckzhs -- env \
-    ZHS_MINUTES="$MINUTES" ZHS_MAXJOBS="$MAXJOBS" ZHS_STAGGER="$STAGGER" \
+    ZHS_MINUTES="$MINUTES" ZHS_MAXJOBS="$MAXJOBS" ZHS_STAGGER="$STAGGER" ZHS_INTERVAL="$INTERVAL" \
     TIKTOKEN_CACHE_DIR="$TIKTOKEN_DIR" LANG=C.UTF-8 PYTHONIOENCODING=utf-8 \
     "$0" "${args[@]}"
 fi
@@ -87,14 +92,14 @@ run_account() {   # run_account <账号名> <实例目录>
     [ -n "$thre" ] && extra=(-t "$thre")
     log "[$name] --- ${cname:-$cid}（$cid）${thre:+, 重看阈值 $thre} ---"
     if [ "$DRY" = "1" ]; then
-      log "[$name]     [dry-run] $PY $d/main.py -c $cid -l $MINUTES ${extra[*]}"
+      log "[$name]     [dry-run] $PY $d/main.py -c $cid -l $MINUTES -i $INTERVAL ${extra[*]}"
       continue
     fi
     rm -f "$d/daily_limit.json"     # 重置预算，让本门课拿到独立的每日额度
     # 捕获本门课的输出，事后统计它是「正常刷完」还是「被验证码挡住」。
     # 以前这两者都无法从日志区分 —— 课程被验证码掐断时同样静默退出，
     # 看起来和「刷完了」一模一样，导致问题拖了很久才被发现。
-    out=$("$PY" "$d/main.py" -c "$cid" -l "$MINUTES" "${extra[@]}" 2>&1)
+    out=$("$PY" "$d/main.py" -c "$cid" -l "$MINUTES" -i "$INTERVAL" "${extra[@]}" 2>&1)
     rc=$?
     printf '%s\n' "$out"
     if printf '%s' "$out" | grep -q 'Captcha重试失败\|验证码重试失败'; then
