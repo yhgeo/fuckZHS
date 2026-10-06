@@ -69,7 +69,8 @@ class Fucker:
                  bark_token: str = '',
                  tree_view:bool = True,
                  progressbar_view:bool = True,
-                 image_path:str = ""):
+                 image_path:str = "",
+                 db_interval:int = None):
         """
         ### Fucker Class
         * `cookies`: dict, optional, cookies to use for the session
@@ -79,6 +80,7 @@ class Fucker:
         * `speed`: float, optional, video playback speed
         * `end_thre`: float, optional, threshold to stop the fucker, overloaded when there are questions left unanswered
         * `tree_view` :bool, optional, print the tree progress view of the course
+        * `db_interval`: int, optional, seconds between progress write-backs (default 90)
         """
         logger.debug(f"created a Fucker {id(self)}, limit: {limit}, speed: {speed}, end_thre: {end_thre}")
 
@@ -130,6 +132,9 @@ class Fucker:
         # 实测偏短 —— 平台频控未解除就重试，只会连续失败。改为 4 次、
         # 60/120/180/240 秒的指数退避，给频控留出冷却窗口。
         self.captcha_retries = 4
+        # 进度回写间隔基准（秒）。上游硬编码 30 秒，密度过高会触发易盾滑块。
+        # 可通过 -i 参数覆盖；默认拉长到 90 秒。
+        self.db_interval = max(15, db_interval or 90)
 
     @property # cannot directly manipulate _cookies property, we need to parse uuid from cookies
     def cookies(self) -> RequestsCookieJar:
@@ -596,7 +601,12 @@ class Fucker:
         speed = self.speed or 1.5  # default speed for Zhidao is 1.5
         last_submit = played_time  # last pause time
         elapsed_time = 0    # real world time elapsed
-        db_interval = 30 + randint(-5, 5)    # randomize report interval to avoid detection
+        # 进度回写间隔（秒）。上游是 30±5 秒 —— 一个 32 分钟的课时要写 ~64 次，
+        # 三门课一天近 200 次写调用，对机房 IP 来说太密，会触发易盾滑块
+        # （平台返回 code -12「需要弹出滑块验证」，且只拦写接口、不拦读接口）。
+        # 拉长到 90±15 秒，写调用降到约 1/3。代价：进程若中途被杀，
+        # 最多损失 1.5 分钟进度，但进度会重跑，无实际影响。
+        db_interval = self.db_interval + randint(-15, 15)
         cache_interval = 18 # cache report interval
         answer = None       # answer flag, do not modify
         report = False      # report flag, do not modify
@@ -661,7 +671,7 @@ class Fucker:
                 self.saveDatabaseIntervalTimeV2(RAC_id,video_id,played_time,last_submit,wp.get(),token_id)
                 last_submit = played_time # update last pause time
                 wp.reset(played_time)     # reset watch point
-                db_interval = 30 + randint(-5, 5) # re-randomize interval
+                db_interval = self.db_interval + randint(-15, 15) # re-randomize interval
             ## report to cache
             if False and elapsed_time % cache_interval == 0:
                 wp.add(played_time)

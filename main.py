@@ -98,6 +98,10 @@ parser.add_argument("-t", "--threshold", type=float,
                     help="Video End Threshold, above this will be considered finished, overloaded when there are questions left unanswered")
 parser.add_argument("-l", "--limit", type=int, default=0,
                     help="Daily time Limit (in minutes, 0 for no limit), shared across courses, default is 0")
+parser.add_argument("-i", "--interval", type=int, default=90,
+                    help="Seconds between progress write-backs (default 90). "
+                         "Larger = fewer requests = less likely to trigger the slider captcha. "
+                         "Upstream hard-coded 30, which is too dense.")
 parser.add_argument("-q", "--qrlogin", action="store_true",
                     help="Use QR Login")
 parser.add_argument("-d", "--debug", action="store_true", help="Debug Mode")
@@ -186,7 +190,8 @@ except Exception:
 
 # create an instance, now we are talking... or fucking
 fucker = Fucker(proxies=proxies, speed=args.speed, end_thre=args.threshold, limit=args.limit,
-                pushplus_token=pushplus_token, bark_token=bark_token, tree_view=tree_view, progressbar_view=progressbar_view, image_path=image_path)
+                pushplus_token=pushplus_token, bark_token=bark_token, tree_view=tree_view, progressbar_view=progressbar_view, image_path=image_path,
+                db_interval=args.interval)
 
 cookies_path = getRealPath("./cookies.json")
 cookies_loaded = False
